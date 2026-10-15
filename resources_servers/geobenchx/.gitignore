@@ -1,0 +1,5 @@
+# Local run outputs: model generations and, in real-tools mode, data derived from
+# the non-redistributable snapshot (see DATA_ATTESTATION.md).
+data/*rollouts*
+data/rollout_verdicts.jsonl
+data/quality_summary.json

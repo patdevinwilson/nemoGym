@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from collections import defaultdict
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from resources_servers.geobenchx.catalog import response_tools
 
+
 ROOT = Path(__file__).resolve().parent
 UPSTREAM_TASKS = ROOT / "upstream" / "tasks_and_reference_solutions.json"
-DATASET_PATH = ROOT / "data" / "benchmark.jsonl"
+DATA_DIR = ROOT / "data"
+DATASET_PATH = DATA_DIR / "benchmark.jsonl"
+VALIDATION_FRACTION = 0.26
+# Upstream prompts use the run date. A fixed date keeps prompts identical across
+# baseline, training, and post-training runs.
+BENCHMARK_DATE = date(2026, 10, 1)
 
 SYSTEM_PROMPT = """You are a geographer who answers questions with maps whenever possible.
 Use the supplied GIS tools and snapshot catalogs. Do not provide Python code. Provide the
@@ -74,7 +82,7 @@ def dataset_row(task: dict[str, Any]) -> dict[str, Any]:
             "input": [
                 {
                     "role": "system",
-                    "content": f"{SYSTEM_PROMPT}\nBenchmark date: {date.today().isoformat()}.",
+                    "content": f"{SYSTEM_PROMPT}\nBenchmark date: {BENCHMARK_DATE.isoformat()}.",
                 },
                 {"role": "user", "content": task["task_text"]},
             ],
@@ -85,13 +93,46 @@ def dataset_row(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def materialize(path: Path = DATASET_PATH) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def split_of(tasks: dict[str, dict[str, Any]] = TASKS) -> dict[str, str]:
+    """Fixed train/validation assignment, stratified by group and task kind.
+
+    Within each stratum, tasks are ordered by a hash of the task ID, so the split
+    does not depend on file order and is stable across rebuilds.
+    """
+    strata: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for task_id, task in tasks.items():
+        strata[(primary_group(task), task_kind(task))].append(task_id)
+    split = {}
+    for ids in strata.values():
+        ids.sort(key=lambda task_id: hashlib.sha256(task_id.encode()).hexdigest())
+        n_validation = round(len(ids) * VALIDATION_FRACTION)
+        for index, task_id in enumerate(ids):
+            split[task_id] = "validation" if index < n_validation else "train"
+    return split
+
+
+def _write(path: Path, tasks: list[dict[str, Any]]) -> None:
     with path.open("w") as stream:
-        for task in TASKS.values():
+        for task in tasks:
             stream.write(json.dumps(dataset_row(task), ensure_ascii=False, separators=(",", ":")) + "\n")
-    return path
+
+
+def materialize(data_dir: Path = DATA_DIR) -> list[Path]:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    split = split_of()
+    train = [task for task_id, task in TASKS.items() if split[task_id] == "train"]
+    validation = [task for task_id, task in TASKS.items() if split[task_id] == "validation"]
+    outputs = {
+        "benchmark.jsonl": list(TASKS.values()),
+        "train.jsonl": train,
+        "validation.jsonl": validation,
+        "example.jsonl": train[:5],
+    }
+    for name, tasks in outputs.items():
+        _write(data_dir / name, tasks)
+    return [data_dir / name for name in outputs]
 
 
 if __name__ == "__main__":
-    print(materialize())
+    for path in materialize():
+        print(path)

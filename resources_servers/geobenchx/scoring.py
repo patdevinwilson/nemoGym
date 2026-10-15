@@ -11,6 +11,7 @@ import json
 from collections import Counter
 from typing import Any
 
+
 OUTPUT_KEYS = {
     "output_dataframe_name",
     "output_geodataframe_name",
@@ -83,9 +84,7 @@ def _norm(value: Any) -> Any:
     return value
 
 
-def _step_match(
-    candidate: tuple[str, dict[str, Any]], reference: dict[str, Any]
-) -> tuple[bool, bool]:
+def _step_match(candidate: tuple[str, dict[str, Any]], reference: dict[str, Any]) -> tuple[bool, bool]:
     """Return (essential_match, partial_difference)."""
     name, candidate_args = candidate
     if name != reference["function_name"]:
@@ -105,9 +104,7 @@ def _step_match(
     return True, partial
 
 
-def _score_solution(
-    calls: list[tuple[str, dict[str, Any]]], reference: dict[str, Any]
-) -> tuple[int, dict[str, Any]]:
+def _score_solution(calls: list[tuple[str, dict[str, Any]]], reference: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     steps = reference.get("steps") or []
     reference_names = [step["function_name"] for step in steps]
     candidate_names = [name for name, _ in calls]
@@ -115,7 +112,9 @@ def _score_solution(
         score = 2 if not calls else 0
         return score, {"reference_tools": [], "matched_steps": 0}
     if reference_names == ["reject_task"]:
-        score = 2 if candidate_names == ["reject_task"] else 0
+        # The paper's judge: a candidate that stops with reject_task fully matches a
+        # reject_task reference, whatever it inspected first.
+        score = 2 if candidate_names and candidate_names[-1] == "reject_task" else 0
         return score, {"reference_tools": reference_names, "matched_steps": int(score == 2)}
     if "reject_task" in candidate_names:
         return 0, {"reference_tools": reference_names, "matched_steps": 0}
@@ -125,9 +124,7 @@ def _score_solution(
     partial = False
     for step in steps:
         options = [
-            (index, _step_match(calls[index], step))
-            for index in unmatched
-            if calls[index][0] == step["function_name"]
+            (index, _step_match(calls[index], step)) for index in unmatched if calls[index][0] == step["function_name"]
         ]
         exact = next(((index, result) for index, result in options if result[0]), None)
         if exact:
@@ -155,21 +152,15 @@ def _score_solution(
     }
 
 
-def score_task(
-    calls: list[tuple[str, dict[str, Any]]], task: dict[str, Any]
-) -> dict[str, Any]:
+def score_task(calls: list[tuple[str, dict[str, Any]]], task: dict[str, Any]) -> dict[str, Any]:
     scored = [_score_solution(calls, solution) for solution in task["reference_solutions"]]
     best_index = max(range(len(scored)), key=lambda index: scored[index][0])
     match, detail = scored[best_index]
-    reference_lengths = [
-        len(solution.get("steps") or []) for solution in task["reference_solutions"]
-    ]
+    reference_lengths = [len(solution.get("steps") or []) for solution in task["reference_solutions"]]
     mean_reference_length = sum(reference_lengths) / len(reference_lengths)
     candidate_length = len(calls)
     length_delta = (
-        (candidate_length - mean_reference_length) / candidate_length
-        if candidate_length
-        else -mean_reference_length
+        (candidate_length - mean_reference_length) / candidate_length if candidate_length else -mean_reference_length
     )
     return {
         "reward": match / 2.0,

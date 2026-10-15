@@ -1,6 +1,17 @@
 # GeoBenchX source and data attestation
 
-This file records provenance; it is not a legal approval for model training.
+## Approval
+
+- Scope: approved for evaluation, training, and redistribution of the JSONL files
+  in the NeMo Gym repo.
+- Reviewer: Katherine Cheung.
+- Conditions:
+  - Go through the Release Process before publishing.
+  - Flag to the legal release PIC that this data includes output of OpenAI and
+    Anthropic models, which may be subject to their respective terms of use (see
+    "Upstream methodology" below).
+- The upstream data snapshot is **not** covered for redistribution; see
+  "Not included".
 
 ## Included benchmark records
 
@@ -14,27 +25,32 @@ This file records provenance; it is not a legal approval for model training.
 - Integrity: the upstream commit is recorded in `upstream/COMMIT`.
 - Upstream methodology: seed tasks came from practitioners and publications; additional
   tasks were generated using Claude 3.5 Sonnet, then manually reviewed. Reference solutions
-  were drafted with GPT-4o or Claude 3.5 Sonnet and manually reviewed/rewritten.
-- No claim is made here that model-generated content is approved for NVIDIA model training.
-  That requires the relevant internal data review.
+  were drafted with GPT-4o or Claude 3.5 Sonnet and manually reviewed/rewritten. This is
+  the OpenAI and Anthropic model output the approval conditions refer to.
 
 ## Not included
 
 The 18 statistical, 21 vector, and 11 raster snapshots used by the original executable
 tools are **not redistributed**. Upstream publishes them as a separate Google Drive archive
-and each underlying source has its own terms. They must receive source-by-source license,
-commercial-use, privacy, and generated-content review before use in training.
+(about 507 MB) and each underlying source has its own terms. The real-tools backend
+(`configs/geobenchx_real_tools.yaml`) reads a locally mounted copy; the snapshot, and tool
+outputs derived from it, must not be committed to this repo or published with it.
 
-The default Gym tool backend is therefore a deterministic catalog/dataflow simulator. This
-matches what the paper evaluates—the semantic tool-call solution—without silently claiming
-the external data is cleared. An execution backend can be added after the snapshot bundle
-is reviewed and mounted.
+The default Gym tool backend is a deterministic catalog/dataflow simulator, so the
+environment runs without the snapshot.
 
 ## Generated outputs
 
-`data/benchmark.jsonl` is a mechanical conversion of the 202 official task records into
-NemoGym Responses API rows. It adds the paper's system rules and tool JSON schemas; it does
-not add synthetic task or answer content.
+`data/benchmark.jsonl`, `data/train.jsonl`, `data/validation.jsonl`, and
+`data/example.jsonl` are mechanical conversions of the 202 official task records into
+NemoGym Responses API rows. They add the paper's system rules, a fixed benchmark date, and
+tool JSON schemas; they do not add synthetic task or answer content. `train.jsonl` and
+`validation.jsonl` partition the 202 tasks (148 / 54) with the fixed split in
+`task_data.split_of`.
+
+Rollout files written by local runs (for example `data/*rollouts*.jsonl`) contain model
+outputs and, in real-tools mode, data derived from the snapshot. Keep them out of the
+release.
 
 ## Paper
 

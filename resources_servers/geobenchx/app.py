@@ -27,10 +27,23 @@ from resources_servers.geobenchx.catalog import (
 )
 from resources_servers.geobenchx.scoring import parse_calls, score_task
 from resources_servers.geobenchx.task_data import TASKS
+from resources_servers.geobenchx.upstream_backend import UpstreamToolPool
 
 
 class GeoBenchXResourcesServerConfig(BaseResourcesServerConfig):
     REVERIFY_MODE: ClassVar[ReverifyMode] = ReverifyMode.STATELESS
+
+    # "simulator" needs no external data. "upstream" runs the real GeoBenchX tools
+    # against a locally mounted copy of the separately licensed data snapshot.
+    tool_backend: Literal["simulator", "upstream"] = "simulator"
+    upstream_python: str | None = None
+    upstream_src: str | None = None
+    stat_data_path: str | None = None
+    geo_data_path: str | None = None
+    scratch_path: str | None = None
+    num_tool_workers: int = 8
+    tool_timeout_s: float = 300.0
+    max_sessions_per_worker: int = 64
 
 
 class GeoBenchXVerifyRequest(BaseVerifyRequest):
@@ -74,9 +87,7 @@ def _output_handle(arguments: dict[str, Any]) -> str | None:
     return None
 
 
-def execute_tool(
-    name: str, arguments: dict[str, Any], state: dict[str, Any]
-) -> dict[str, Any]:
+def execute_tool(name: str, arguments: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     """Catalog-aware state simulator used by the matching-based benchmark.
 
     GeoBenchX evaluates the solution algorithm rather than final map pixels.
@@ -172,27 +183,41 @@ class GeoBenchXResourcesServer(GeoBenchXVerifier, SimpleResourcesServer):
     ray_enabled = False
     config: GeoBenchXResourcesServerConfig
     _sessions: dict[str, dict[str, Any]] = PrivateAttr(default_factory=dict)
+    _upstream: UpstreamToolPool | None = PrivateAttr(default=None)
+
+    def model_post_init(self, context: Any) -> None:
+        super().model_post_init(context)
+        if self.config.tool_backend == "upstream":
+            self._upstream = _build_upstream_pool(self.config)
 
     def setup_webserver(self) -> FastAPI:
         app = super().setup_webserver()
         for name in TOOL_DEFINITIONS:
             app.post(f"/{name}")(self._handler(name))
+        if self._upstream is not None:
+            app.router.add_event_handler("shutdown", self._upstream.close)
         return app
 
     def _handler(self, tool_name: str):
         async def handler(request: Request, body: ToolBody) -> dict[str, Any]:
             session_id = request.session.get(SESSION_ID_KEY, "")
+            arguments = body.model_dump(exclude_none=True)
+            if self._upstream is not None:
+                out = await self._upstream.call(session_id, tool_name, arguments)
+                return {"result": out["result"]}
             state = self._sessions.setdefault(
                 session_id, {"task_id": None, "objects": {}, "artifacts": [], "rejected": False}
             )
-            return execute_tool(tool_name, body.model_dump(exclude_none=True), state)
+            return execute_tool(tool_name, arguments, state)
 
         handler.__name__ = f"handle_{tool_name}"
         return handler
 
     async def seed_session(self, request: Request, body: SeedBody) -> BaseSeedSessionResponse:
         session_id = request.session.get(SESSION_ID_KEY)
-        if session_id:
+        if session_id and self._upstream is not None:
+            await self._upstream.reset(session_id)
+        elif session_id:
             self._sessions[session_id] = {
                 "task_id": body.task_id,
                 "objects": {},
@@ -200,6 +225,29 @@ class GeoBenchXResourcesServer(GeoBenchXVerifier, SimpleResourcesServer):
                 "rejected": False,
             }
         return BaseSeedSessionResponse()
+
+
+def _build_upstream_pool(config: GeoBenchXResourcesServerConfig) -> UpstreamToolPool:
+    required = {
+        "upstream_python": config.upstream_python,
+        "upstream_src": config.upstream_src,
+        "stat_data_path": config.stat_data_path,
+        "geo_data_path": config.geo_data_path,
+        "scratch_path": config.scratch_path,
+    }
+    missing = [key for key, value in required.items() if not value]
+    if missing:
+        raise ValueError(f"tool_backend=upstream requires: {', '.join(missing)}")
+    return UpstreamToolPool(
+        python=config.upstream_python,
+        upstream_src=config.upstream_src,
+        stat_data_path=config.stat_data_path,
+        geo_data_path=config.geo_data_path,
+        scratch_path=config.scratch_path,
+        num_workers=config.num_tool_workers,
+        tool_timeout_s=config.tool_timeout_s,
+        max_sessions_per_worker=config.max_sessions_per_worker,
+    )
 
 
 VERIFIER_FIXTURE = VerifierFixture(
